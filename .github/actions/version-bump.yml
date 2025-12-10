@@ -1,0 +1,103 @@
+name: Version Bump on Merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+
+jobs:
+  bump-version:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: read
+
+    steps:
+      - name: "Checkout repository"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "Determine bump type from PR labels"
+        id: bump_type
+        run: |
+          LABELS=$(jq -r '.pull_request.labels[].name' <<< '${{ toJson(github.event) }}')
+
+          COUNT=0
+          BUMP_TYPE=""
+
+          for LABEL in $LABELS; do
+            case "$LABEL" in
+              version:major)
+                BUMP_TYPE="major"
+                COUNT=$((COUNT+1))
+                ;;
+              version:minor)
+                BUMP_TYPE="minor"
+                COUNT=$((COUNT+1))
+                ;;
+              version:patch)
+                BUMP_TYPE="patch"
+                COUNT=$((COUNT+1))
+                ;;
+              version:no_bump)
+                BUMP_TYPE="no_bump"
+                COUNT=$((COUNT+1))
+                ;;
+            esac
+          done
+
+          if [ "$COUNT" -ne 1 ]; then
+            echo "ERROR: Expected exactly ONE version:* label, found $COUNT"
+            exit 1
+          fi
+
+          echo "bump_type=$BUMP_TYPE" >> "$GITHUB_OUTPUT"
+
+      - name: "Nothing to do for version:no_bump"
+        if: steps.bump_type.outputs.bump_type == 'no_bump'
+        run: echo "version:no_bump set; skipping version bump."
+
+      - name: "Set git author to github-actions[bot]"
+        if: steps.bump_type.outputs.bump_type != 'no_bump'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: "Install uv"
+        if: steps.bump_type.outputs.bump_type != 'no_bump'
+        run: |
+          pip install uv
+
+      - name: "Read current version"
+        if: steps.bump_type.outputs.bump_type != 'no_bump'
+        id: current_version
+        run: |
+          CURRENT=$(uv version --short)
+          echo "Current version: $CURRENT"
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+
+      - name: "Bump version with uv"
+        if: steps.bump_type.outputs.bump_type != 'no_bump'
+        run: |
+          uv version --bump ${{ steps.bump_type.outputs.bump_type }}
+
+      - name: "Read new version"
+        if: steps.bump_type.outputs.bump_type != 'no_bump'
+        id: new_version
+        run: |
+          NEW=$(uv version --short)
+          echo "New version: $NEW"
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+
+      - name: "Commit version and lockfile, tag, and push"
+        if: steps.bump_type.outputs.bump_type != 'no_bump'
+        run: |
+          git add pyproject.toml uv.lock
+          git commit -m "chore: bump version from ${{ steps.current_version.outputs.current }} to ${{ steps.new_version.outputs.new }}"
+          git tag "v${{ steps.new_version.outputs.new }}"
+          git push
+          git push --tags
